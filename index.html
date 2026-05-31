@@ -195,26 +195,22 @@
     <div class="bento-box">
         <h1>📻 Castella 串流播放平台</h1>
         
-        <!-- 步驟一：藍牙連線 -->
         <div>
             <button id="btnConnect">1. 🔗 連接實體樂器 (BLE)</button>
         </div>
 
-        <!-- 步驟二：串流歌單 (Spotify-like) -->
         <div class="card" style="margin-top: 15px;">
             <div class="playlist-header">
-                <span>📚 我的歌單</span>
+                <span>📚 雲端自動歌單</span>
                 <label class="add-local-btn">
                     <input type="file" id="fileInput" accept=".json" multiple>
                     ➕ 加入本機檔案
                 </label>
             </div>
             <div class="playlist" id="playlistContainer">
-                <!-- 歌單會由 JavaScript 動態生成 -->
-            </div>
+                </div>
         </div>
 
-        <!-- 步驟三：媒體播放器 -->
         <div class="card player-card">
             <div class="now-playing">
                 <div class="np-title" id="npTitle">尚未選擇歌曲</div>
@@ -236,13 +232,12 @@
 
     <script>
         // ==========================================
-        // 0. 串流歌單資料庫 
-        // 預設展示用的雲端檔案。透過 UI 按鈕加入的檔案會動態推入此陣列。
+        // 0. 串流歌單資料庫 (自動從 GitHub 抓取)
         // ==========================================
-        const PLAYLIST = [
-            { id: 1, title: "卡農 (Canon in D)", artist: "示範曲目 (需有檔案)", icon: "🎻", url: "songs/canon.json" },
-            { id: 2, title: "夜曲 (Nocturne Op.9 No.2)", artist: "示範曲目 (需有檔案)", icon: "🎹", url: "songs/nocturne.json" }
-        ];
+        const PLAYLIST = []; 
+
+        const GITHUB_USERNAME = "lloydchiu0902-glitch"; 
+        const GITHUB_REPO = "castella-player"; // 如果您建立的專案名稱不同，請修改這裡
 
         const UART_SERVICE_UUID = 0xFFE0;
         const UART_CHAR_UUID    = 0xFFE1;
@@ -274,10 +269,15 @@
         }
 
         // ==========================================
-        // 初始化與渲染歌單 UI
+        // 渲染歌單 UI
         // ==========================================
         function renderPlaylist() {
             ui.playlistContainer.innerHTML = '';
+            if (PLAYLIST.length === 0) {
+                ui.playlistContainer.innerHTML = '<div style="padding:15px; color:#64748b; text-align:center; font-size:12px;">資料夾為空，請將 .json 檔上傳至 GitHub 的 songs 資料夾，或點擊右上角加入本機檔案。</div>';
+                return;
+            }
+
             PLAYLIST.forEach(song => {
                 const item = document.createElement('div');
                 item.className = 'song-item';
@@ -296,10 +296,49 @@
                 ui.playlistContainer.appendChild(item);
             });
         }
-        renderPlaylist();
 
         // ==========================================
-        // 處理使用者加入本機檔案 (Bypassing 404 Error)
+        // 自動掃描雲端歌曲
+        // ==========================================
+        async function fetchPlaylistFromGitHub() {
+            try {
+                const apiUrl = `https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/contents/songs`;
+                const response = await fetch(apiUrl);
+                
+                if (!response.ok) {
+                    throw new Error("找不到 songs 資料夾");
+                }
+
+                const files = await response.json();
+                PLAYLIST.length = 0; 
+                
+                files.forEach((file, index) => {
+                    if (file.name.endsWith('.json')) {
+                        const songName = file.name.replace('.json', ''); 
+                        PLAYLIST.push({
+                            id: index + 1,
+                            title: decodeURIComponent(songName),
+                            artist: "雲端串流",
+                            icon: "🎵",
+                            url: file.download_url 
+                        });
+                    }
+                });
+                
+                renderPlaylist();
+                log("✅ 雲端歌單自動掃描並更新完畢！", "#10b981");
+                
+            } catch (error) {
+                log(`⚠️ 掃描雲端歌單失敗: ${error.message}`, "#fbbf24");
+                renderPlaylist(); 
+            }
+        }
+
+        // 網頁開啟時立即執行掃描
+        fetchPlaylistFromGitHub();
+
+        // ==========================================
+        // 處理使用者加入本機檔案
         // ==========================================
         ui.fileInput.addEventListener('change', (event) => {
             const files = event.target.files;
@@ -310,17 +349,16 @@
                 reader.onload = (e) => {
                     try {
                         const data = JSON.parse(e.target.result);
-                        if (!data.commands) throw new Error("這不是有效的 Castella JSON 檔案");
+                        if (!data.commands) throw new Error("無效的 Castella 格式");
                         
                         const title = data.song_name || file.name.replace('.json', '');
                         
-                        // 動態加入歌單記憶體中 (不需上傳伺服器)
                         PLAYLIST.push({
                             id: Date.now() + Math.random(),
                             title: title,
                             artist: "已載入記憶體",
                             icon: "📁",
-                            localData: data // 直接將資料存在物件中
+                            localData: data 
                         });
                         
                         renderPlaylist();
@@ -332,7 +370,6 @@
                 };
                 reader.readAsText(file);
             });
-            // 重置 input 以便能重複選取同一個檔案
             ui.fileInput.value = '';
         });
 
@@ -372,7 +409,7 @@
         });
 
         // ==========================================
-        // 2. 處理歌曲載入 (支援 Fetch 網址或 Local 記憶體資料)
+        // 2. 處理歌曲載入
         // ==========================================
         async function loadSong(songObj) {
             if (isPlaying) {
@@ -388,11 +425,9 @@
 
             try {
                 if (songObj.localData) {
-                    // 情況 A：播放使用者上傳的本機檔案 (直接從記憶體拿，不會發生 404)
                     songData = songObj.localData;
                     processLoadedSongData(songData.song_name || songObj.title);
                 } else {
-                    // 情況 B：播放伺服器上的串流檔案
                     const response = await fetch(songObj.url);
                     if (!response.ok) throw new Error(`HTTP 錯誤碼: ${response.status}`);
                     songData = await response.json();
@@ -400,7 +435,7 @@
                 }
             } catch (error) {
                 ui.npTitle.innerText = "❌ 載入失敗";
-                ui.npStatus.innerText = "找不到歌曲檔案";
+                ui.npStatus.innerText = "無法取得歌曲檔案";
                 log(`載入錯誤: ${error.message}`, "#ef4444");
             }
         }
@@ -412,7 +447,6 @@
             ui.npTitle.innerText = title;
             ui.npStatus.innerText = `準備就緒 (${songData.total_commands} 個實體指令)`;
             
-            // 計算總時長 (最後一個指令的時間)
             songDurationUs = songData.commands[songData.commands.length - 1].t_us;
             log(`✅ 成功載入: ${title} (時長: ${(songDurationUs/1000000).toFixed(1)}s)`, "#38bdf8");
             checkPlayReady();
@@ -454,7 +488,6 @@
             const commands = songData.commands;
             startTimeUs = performance.now() * 1000;
             
-            // 啟動進度條動畫
             if (animFrameId) cancelAnimationFrame(animFrameId);
             animFrameId = requestAnimationFrame(updateProgressBar);
 
@@ -507,7 +540,6 @@
                 ui.npStatus.style.color = "#ef4444";
                 log("⏹ 使用者中斷播放", "#ef4444");
                 
-                // 若被中斷，發送靜音指令給所有馬達
                 if (gattCharacteristic) {
                     try {
                         const stopPacket = new Uint8Array([0xFE, 0xFE, 0x02, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
